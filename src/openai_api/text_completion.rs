@@ -60,8 +60,8 @@ impl TextCompletionRequestBuilder {
             //     or else default model
             model: self
                 .model
-                .or(env::var("OPENAI_GPT_MODEL_NAME").ok().map(Into::into))
-                .unwrap_or(DEFAULT_MODEL.into()),
+                .or_else(|| env::var("OPENAI_GPT_MODEL_NAME").ok().map(Into::into))
+                .unwrap_or_else(|| DEFAULT_MODEL.into()),
             temperature: self.temperature.unwrap_or_default(),
             max_tokens: self.max_tokens.unwrap_or(DEFAULT_NUMBER_OF_TOKENS),
         }

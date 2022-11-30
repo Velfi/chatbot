@@ -26,7 +26,7 @@ pub struct State {
 
 impl State {
     pub fn load() -> Self {
-        Self::new_from_database().unwrap_or(Self::new_testing())
+        Self::new_from_database().unwrap_or_else(Self::new_testing)
     }
 
     pub fn user_is_typing(&mut self) -> bool {

@@ -9,8 +9,8 @@ use text_completion::TextCompletionRequest;
 use tracing::{debug, trace};
 
 const COMPLETIONS_URI: &str = "https://api.openai.com/v1/completions";
-const OPENAI_API_KEY: Lazy<String> = Lazy::new(|| std::env::var("OPENAI_API_KEY").unwrap());
-const OPENAI_ORGANIZATION_ID: Lazy<String> =
+static OPENAI_API_KEY: Lazy<String> = Lazy::new(|| std::env::var("OPENAI_API_KEY").unwrap());
+static OPENAI_ORGANIZATION_ID: Lazy<String> =
     Lazy::new(|| std::env::var("OPENAI_ORGANIZATION_ID").unwrap());
 
 pub struct Client {
@@ -87,7 +87,7 @@ fn create_prompt_from_messages(messages: &[Message]) -> String {
     let messages_len = messages.iter().map(|m| m.content.len()).sum::<usize>();
     let mut prompt = String::with_capacity(messages_len);
 
-    if let Some(starting_prompt) = env::var("STARTING_PROMPT").ok() {
+    if let Ok(starting_prompt) = env::var("STARTING_PROMPT") {
         prompt.push_str(&starting_prompt);
         prompt.push('\n')
     }

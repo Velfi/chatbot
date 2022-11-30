@@ -1,7 +1,5 @@
-use std::cmp::Ordering;
-
 use chrono::{DateTime, Utc};
-
+use std::cmp::Ordering;
 
 #[derive(Debug, Clone)]
 pub struct Message {
@@ -10,8 +8,6 @@ pub struct Message {
     pub content: String,
     pub timestamp: DateTime<Utc>,
 }
-
-
 
 impl PartialEq for Message {
     // Messages only have a unique ID relative to a single conversation, so don't go comparing

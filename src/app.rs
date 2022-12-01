@@ -1,116 +1,71 @@
-mod ui;
+mod backend;
+mod frontend;
 
-use crate::{message::Message, state::State, USER_NAME};
-use std::io::Stdout;
-use tracing::trace;
-use tui::{backend::CrosstermBackend, Terminal};
-use tui_textarea::{Input, Key, TextArea};
-use ui::{build_layout_chunks, build_messages_widget, build_status_widget};
+use backend::BackendState;
+use frontend::FrontendState;
+use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender, self};
+use tracing::{debug, info, error};
 
-pub struct App<'t> {
-    state: State,
-    terminal: &'t mut Terminal<CrosstermBackend<Stdout>>,
-}
+use crate::message::Message;
 
-impl<'t, 'b> App<'t> {
-    pub fn builder() -> Builder<'b> {
-        Builder::new()
-    }
+pub struct App {}
 
-    pub fn run_until_exit(mut self) -> Result<(), anyhow::Error> {
-        let mut textarea = TextArea::default();
+impl App {
+    pub async fn run_until_exit() -> Result<(), anyhow::Error> {
+        let (app_tx, mut app_rx) = unbounded_channel::<Event>();
+        let (f_tx, f_rx) = unbounded_channel::<Event>();
+        let (b_tx, b_rx) = unbounded_channel::<Event>();
 
-        loop {
-            if self.state.should_quit {
-                trace!("quitting");
-                break;
-            }
+        let mut frontend = FrontendState::new(f_rx, b_tx, app_tx.clone()).await?;
+        let mut backend = BackendState::new(b_rx, f_tx, app_tx).await?;
 
-            self.terminal.draw(|f| {
-                let chunks = build_layout_chunks(f);
+        'main_loop: loop {
+            let frontend_fut = frontend.tick();
+            let backend_fut = backend.tick();
 
-                let messages_widget = build_messages_widget(&self.state);
-                f.render_widget(messages_widget, chunks[0]);
+            let (frontend_result, backend_result) = tokio::join!(frontend_fut, backend_fut);
+            frontend_result?;
+            backend_result?;
 
-                f.render_widget(textarea.widget(), chunks[1]);
-
-                let status_widget = build_status_widget(&self.state);
-                f.render_widget(status_widget, chunks[2]);
-            })?;
-
-            match crossterm::event::read()?.into() {
-                Input { key: Key::Esc, .. } => {
-                    self.state.should_quit = true;
-                }
-                Input {
-                    key: Key::Enter, ..
-                } => {
-                    if self.state.user_is_typing() {
-                        let content = textarea.into_lines().remove(0);
-                        let message = Message {
-                            sender: USER_NAME.to_owned(),
-                            content,
-                            timestamp: chrono::Utc::now(),
-                            id: self.state.next_message_id(),
-                        };
-                        trace!(
-                            message.timestamp = message.timestamp.to_rfc2822().as_str(),
-                            message.id = message.id,
-                            message.content = message.content,
-                            "user sent message"
-                        );
-
-                        self.state.send_message(message);
-                        // Clear the textarea by replacing it with a new one.
-                        textarea = TextArea::default();
-                    }
-                }
-                // Ignore these keyboard shortcuts
-                Input {
-                    key: Key::Char('m'),
-                    ctrl: true,
-                    alt: false,
-                } => continue,
-                // All other inputs are passed to the textarea input handler
-                input => {
-                    // Ignore user input unless it's their turn to type.
-                    if self.state.user_is_typing() {
-                        textarea.input(input);
-                    }
+            'event_loop: loop {
+                match app_rx.try_recv() {
+                    Ok(event) => match event {
+                            Event::Quit => {
+                                frontend.quit().await?;
+                                debug!("frontend is done quitting");
+                                backend.quit().await?;
+                                debug!("backend is done quitting");
+                                info!("Thanks for chatting!");
+    
+                                break 'main_loop;
+                            }
+                            _ => {}
+                    },
+                    Err(e) => match e {
+                        mpsc::error::TryRecvError::Empty => {
+                            break 'event_loop;
+                        }
+                        mpsc::error::TryRecvError::Disconnected => {
+                            error!("app_rx channel closed");
+                            break 'main_loop;
+                        }
+                    },
                 }
             }
         }
+
         Ok(())
     }
 }
 
-pub struct Builder<'t> {
-    state: Option<State>,
-    terminal: Option<&'t mut Terminal<CrosstermBackend<Stdout>>>,
-}
+type EventRx = UnboundedReceiver<Event>;
+type EventTx = UnboundedSender<Event>;
 
-impl<'t> Builder<'t> {
-    pub fn new() -> Self {
-        Self {
-            state: None,
-            terminal: None,
-        }
-    }
-
-    pub fn state(mut self, state: State) -> Self {
-        self.state = Some(state);
-        self
-    }
-
-    pub fn terminal(mut self, terminal: &'t mut Terminal<CrosstermBackend<Stdout>>) -> Self {
-        self.terminal = Some(terminal);
-        self
-    }
-
-    pub fn build(self) -> App<'t> {
-        App {
-            state: self.state.expect("state is required"),
-            terminal: self.terminal.expect("terminal is required"),
-        }
-    }
+enum Event {
+    /// Any handler receiving this event should put its affairs in order.
+    Quit,
+    UserMessage(String),
+    BotMessage(Message),
+    ConversationUpdated(Vec<Message>),
+    StatusUpdated(String),
 }

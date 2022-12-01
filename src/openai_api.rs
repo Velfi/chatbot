@@ -1,8 +1,6 @@
 mod text_completion;
 
-use crate::{
-    message::Message, openai_api::text_completion::TextCompletionResponse, state::State, BOT_NAME,
-};
+use crate::{message::Message, openai_api::text_completion::TextCompletionResponse, BOT_NAME};
 use once_cell::sync::Lazy;
 use std::env;
 use text_completion::TextCompletionRequest;
@@ -25,8 +23,12 @@ impl Client {
     }
 
     // TODO this is fallible and should return a result
-    pub async fn fetch_next_response_to_messages(&self, state: &State) -> Message {
-        let prompt = create_prompt_from_messages(&state.messages);
+    pub async fn fetch_next_response_to_messages(
+        &self,
+        next_message_id: u64,
+        messages: &[Message],
+    ) -> Message {
+        let prompt = create_prompt_from_messages(messages);
         let body = TextCompletionRequest::builder().prompt(prompt).build();
 
         let res = self
@@ -48,7 +50,7 @@ impl Client {
         let body: TextCompletionResponse = res.json().await.unwrap();
 
         let message = Message {
-            id: state.next_message_id(),
+            id: next_message_id,
             sender: BOT_NAME.into(),
             content: body.message(),
             timestamp: chrono::Utc::now(),
@@ -107,27 +109,4 @@ fn create_prompt_from_messages(messages: &[Message]) -> String {
     prompt
 }
 
-#[cfg(test)]
-mod tests {
-    use super::Client;
-    use crate::state::State;
-    use std::sync::Once;
-
-    static INIT: Once = Once::new();
-    fn init() {
-        INIT.call_once(|| {
-            dotenv::dotenv().unwrap();
-            tracing_subscriber::fmt::init();
-        });
-    }
-
-    #[tokio::test]
-    #[ignore = "This requires an actual API key and will cause charges to be applied to your account."]
-    async fn test_fetch_next_response_to_messages() {
-        init();
-
-        let state = State::load();
-        let client = Client::new();
-        let _res = client.fetch_next_response_to_messages(&state).await;
-    }
-}
+// TODO test these APIs somehow

@@ -193,6 +193,14 @@ impl BackendState {
                         .map_err(|e| {
                             anyhow::anyhow!("failed to notify frontend of conversation update: {e}")
                         })?;
+                    self.frontend_tx
+                        .send(Event::StatusUpdated(format!(
+                            "Bot responded in {:?}",
+                            start_time.elapsed()
+                        )))
+                        .map_err(|e| {
+                            anyhow::anyhow!("failed to notify frontend of conversation update: {e}")
+                        })?;
                     self.inner = Inner::UsersTurn;
                 }
 
@@ -219,6 +227,14 @@ impl BackendState {
                                 "failed to notify frontend of conversation update: {}",
                                 e
                             )
+                        })?;
+                    self.frontend_tx
+                        .send(Event::StatusUpdated(format!(
+                            "Bot slowly responded in {:?}",
+                            start_time.elapsed()
+                        )))
+                        .map_err(|e| {
+                            anyhow::anyhow!("failed to notify frontend of conversation update: {e}")
                         })?;
                     self.inner = Inner::UsersTurn;
                 }

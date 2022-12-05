@@ -5,12 +5,13 @@ use std::{
     time::Duration,
 };
 
-const DEFAULT_PROMPT: &str = "The following is a conversation with an AI assistant. The assistant is helpful, creative, clever, and very friendly.";
+const DEFAULT_PROMPT: &str = "The following is a conversation that 'User' is having with an AI assistant named 'Bot'. The assistant is helpful, creative, clever, and very friendly.";
 const DEFAULT_YOUR_NAME: &str = "User";
 const DEFAULT_THEIR_NAME: &str = "Bot";
 const DEFAULT_MODEL_NAME: &str = "text-davinci-003";
 // How many words the model should generate? TODO verify this comment
 const DEFAULT_TOKEN_LIMIT: u32 = 100;
+const DEFAULT_EXPECTED_RESPONSE_TIME: Duration = Duration::from_secs(5);
 
 pub struct Env {
     your_name: String,
@@ -38,7 +39,7 @@ impl Env {
                     .context("parsing expected_response_time from env")
                     .map(|millis| Duration::from_millis(millis))
             })
-            .unwrap_or(Duration::from_secs(3));
+            .unwrap_or(DEFAULT_EXPECTED_RESPONSE_TIME);
         let prompt_context_length = env::var("PROMPT_CONTEXT_LENGTH")
             .context("checking for expected_response_time in env")
             .and_then(|t| t.parse().context("parsing prompt_context_length from env"))

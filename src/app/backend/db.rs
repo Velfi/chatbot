@@ -3,33 +3,36 @@ use std::path::Path;
 use crate::message::Message;
 use anyhow::Context;
 use rusqlite::{params, Connection};
-use tracing::info;
+use tracing::{info, debug};
 
 pub fn load_previous_conversation_from_database(
     path: &Path,
 ) -> Result<(Connection, Vec<Message>), anyhow::Error> {
     // find the database file and load it
-    match Connection::open(path).context("failed to load database from disk") {
-        Ok(conn) => {
-            let previous_conversation_id: i64 = conn
-                .query_row(
-                    // TODO do I want ASC or DESC here?
-                    "SELECT id FROM conversations ORDER BY created_at DESC LIMIT 1",
-                    [],
-                    |row| row.get(0),
-                )
-                .context("failed to load previous conversation ID from database")?;
-
-            get_messages_by_conversation_id(&conn, previous_conversation_id)
-                .map(|messages| (conn, messages))
-        }
-        Err(e) => {
+    Connection::open(path)
+        .context("failed to load database from disk")
+        .and_then(|conn| {
+            // TODO log possible failuers with `error!()`
+            conn.query_row(
+                // TODO do I want ASC or DESC here?
+                "SELECT id FROM conversations ORDER BY created_at DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .context("failed to load previous conversation ID from database")
+            .map(|id| (conn, id))
+        })
+        .and_then(|(conn, id)| {
+            // TODO log possible failuers with `error!()`
+            get_messages_by_conversation_id(&conn, id).map(|messages| (conn, messages))
+        })
+        .or_else(|e| {
             info!("failed to load database from disk: {}", e);
             info!("creating new database and returning empty conversation");
-            let conn = initialize_database().context("failed to initialize database")?;
-            Ok((conn, Vec::new()))
-        }
-    }
+            initialize_database()
+                .context("failed to initialize database")
+                .map(|conn| (conn, Vec::new()))
+        })
 }
 
 fn get_messages_by_conversation_id(
@@ -98,6 +101,11 @@ pub fn commit_conversation_to_database(
     prompt: &str,
     conversation: &[Message],
 ) -> Result<(), anyhow::Error> {
+    if conversation.is_empty() {
+        debug!("no conversations to commit to DB, returning early");
+        return Ok(());
+    }
+
     let tx = conn.transaction().context("starting transaction")?;
 
     tx.execute(

@@ -13,7 +13,7 @@ use tui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Span, Spans},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Widget, Wrap},
+    widgets::{Block, Borders, Paragraph, Widget, Wrap},
     Frame,
 };
 use tui::{backend::CrosstermBackend, Terminal};
@@ -29,7 +29,6 @@ enum Inner {
 // TODO Can these use Cows instead?
 struct WidgetState {
     conversation: Vec<Message>,
-    conversation_state: ListState,
     status: String,
     textarea: TextArea<'static>,
 }
@@ -61,7 +60,6 @@ impl FrontendState {
             conversation: Vec::new(),
             status: "loading the chatbot...".to_owned(),
             textarea: TextArea::default(),
-            conversation_state: ListState::default(),
         };
 
         Ok(Self {
@@ -183,33 +181,34 @@ impl FrontendState {
 
                     f.render_widget(p, chunks[0]);
                 } else {
-                    let items: Vec<_> = self.widget_state.conversation
+                    let entries: Vec<_> = self.widget_state.conversation
                         .iter()
                         .map(|m| {
-                            ListItem::new(vec![
-                                Spans::from(vec![
-                                    Span::styled(&m.sender, Style::default().add_modifier(Modifier::BOLD)),
-                                    Span::raw(": "),
-                                    Span::styled(
-                                        m.timestamp.to_rfc2822(),
-                                        Style::default()
-                                            .fg(Color::Gray)
-                                            .add_modifier(Modifier::ITALIC),
-                                        ),
-                                    Span::raw(&m.content),
-                                    // Empty line to space things out a bit
-                                    Span::raw(""),
-                                ])
+                            Spans::from(vec![
+                                Span::styled(&m.sender, Style::default().add_modifier(Modifier::BOLD)),
+                                Span::raw(": "),
+                                Span::styled(
+                                    m.timestamp.to_rfc2822(),
+                                    Style::default()
+                                        .fg(Color::Gray)
+                                        .add_modifier(Modifier::ITALIC),
+                                    ),
+                                Span::raw(&m.content),
+                                // Empty line to space things out a bit
+                                Span::raw(""),
                             ])
                         })
                         .collect();
 
-                    // TODO correctly handle window resizing so that we can see the whole conversation
+                    let conversation = Paragraph::new(entries)
+                    // TODO allow users to  scroll the conversation
+                    // TODO autoscroll to last message on conversation update
                     // This will scroll down to the latest message in the conversation.
-                    self.widget_state.conversation_state.select(Some(items.len() - 1));
-                    let list = List::new(items).block(Block::default().borders(Borders::BOTTOM));
+                    // .scroll((0, 0))
+                    .wrap(Wrap { trim: false })
+                    .block(Block::default().borders(Borders::BOTTOM));
 
-                    f.render_stateful_widget(list, chunks[0], &mut self.widget_state.conversation_state);
+                    f.render_widget(conversation, chunks[0]);
                 };
 
                 f.render_widget(self.widget_state.textarea.widget(), chunks[1]);

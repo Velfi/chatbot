@@ -1,2 +1,5 @@
 /target
 /.env
+debug.log
+test.db
+chatbot.db

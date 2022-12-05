@@ -1,13 +1,5 @@
-use chrono::serde::ts_seconds;
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
-use std::env;
-
-// How many words the model should generate? TODO verify this comment
-const DEFAULT_NUMBER_OF_TOKENS: u32 = 40;
-// The most expensive model, but also the most powerful
-const DEFAULT_MODEL: &str = "text-davinci-003";
 
 #[derive(Debug, Serialize)]
 pub struct TextCompletionRequest {
@@ -42,41 +34,46 @@ impl TextCompletionRequestBuilder {
         self
     }
 
-    pub fn temperature(mut self, temperature: f32) -> Self {
+    pub fn _temperature(mut self, temperature: f32) -> Self {
         self.temperature = Some(temperature);
         self
     }
 
+    /// Set the maximum number of tokens to generate.
+    ///
+    /// A helpful rule of thumb is that one token generally corresponds to ~4 characters of text for
+    /// common English text. This translates to roughly ¾ of a word (so 100 tokens ~= 75 words).
+    ///
+    /// See [this doc](https://beta.openai.com/tokenizer) for more information on tokens.
     pub fn max_tokens(mut self, max_tokens: u32) -> Self {
         self.max_tokens = Some(max_tokens);
         self
     }
 
-    pub fn build(self) -> TextCompletionRequest {
-        TextCompletionRequest {
+    pub fn build(self) -> Result<TextCompletionRequest, anyhow::Error> {
+        Ok(TextCompletionRequest {
             prompt: self.prompt.expect("prompt is required"),
-            // Use model from builder,
-            //     or else model from env var,
-            //     or else default model
             model: self
                 .model
-                .or_else(|| env::var("OPENAI_GPT_MODEL_NAME").ok().map(Into::into))
-                .unwrap_or_else(|| DEFAULT_MODEL.into()),
+                .map(Into::into)
+                .ok_or_else(|| anyhow::anyhow!("model is required"))?,
             temperature: self.temperature.unwrap_or_default(),
-            max_tokens: self.max_tokens.unwrap_or(DEFAULT_NUMBER_OF_TOKENS),
-        }
+            max_tokens: self
+                .max_tokens
+                .ok_or_else(|| anyhow::anyhow!("max_tokens is required"))?,
+        })
     }
 }
 
 #[derive(Debug, Deserialize)]
 pub struct TextCompletionResponse {
-    id: String,
-    object: String,
-    #[serde(with = "ts_seconds")]
-    created: DateTime<Utc>,
-    model: String,
+    // id: String,
+    // object: String,
+    // #[serde(with = "ts_seconds")]
+    // created: DateTime<Utc>,
+    // model: String,
     choices: Vec<Choice>,
-    usage: Usage,
+    // usage: Usage,
 }
 
 impl TextCompletionResponse {
@@ -93,14 +90,14 @@ impl TextCompletionResponse {
 #[derive(Debug, Deserialize)]
 struct Choice {
     text: String,
-    index: u32,
-    logprobs: Option<u32>,
-    finish_reason: String,
+    // index: u32,
+    // logprobs: Option<u32>,
+    // finish_reason: String,
 }
 
-#[derive(Debug, Deserialize)]
-struct Usage {
-    prompt_tokens: u32,
-    completion_tokens: u32,
-    total_tokens: u32,
-}
+// #[derive(Debug, Deserialize)]
+// struct Usage {
+//     prompt_tokens: u32,
+//     completion_tokens: u32,
+//     total_tokens: u32,
+// }

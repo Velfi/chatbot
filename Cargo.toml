@@ -1,5 +1,9 @@
 [package]
 name = "chatbot"
+authors = ["Zelda Hessler <zelda.hessler@pm.me>"]
+description = """
+A terminal-based client for talking to OpenAI's GPT models. Conversations are saved to a local
+SQLite database and may be resumed later."""
 version = "0.1.0"
 edition = "2021"
 
@@ -8,7 +12,7 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.66"
 chrono = { version = "0.4.23", features = ["serde"] }
-clap = "4.0.29"
+clap = { version = "4.0.29", features = ["derive"] }
 crossterm = "0.25.0"
 dotenv = "0.15.0"
 futures = "0.3.25"
@@ -19,12 +23,10 @@ reqwest = { version = "0.11.13", features = ["json"] }
 rusqlite = { version = "0.28.0", features = ["bundled", "chrono", "backup"] }
 serde = { version = "1.0.148", features = ["derive"] }
 serde_json = "1.0.89"
-tokio = { version = "1.22.0", features = ["full"] }
+tokio = { version = "1.22.0", features = ["macros", "rt-multi-thread"] }
 tracing = "0.1.37"
 tracing-appender = "0.2.2"
 tracing-subscriber = { version = "0.3.16", features = ["env-filter"] }
 tui = "0.19.0"
 tui-textarea = "0.2.0"
 
-[dev-dependencies]
-tokio = { version = "1.22.0", features = ["macros"] }

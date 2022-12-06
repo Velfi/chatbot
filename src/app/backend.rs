@@ -4,9 +4,10 @@ use super::env::Env;
 use super::{Event, EventRx, EventTx};
 use crate::message::Message;
 use crate::openai_api::fetch_response_to_prompt;
+use crate::Args;
 use db::{
-    commit_conversation_to_database, load_previous_conversation_from_database,
-    save_database_to_file,
+    begin_new_conversation, commit_conversation_to_database,
+    load_previous_conversation_from_database, save_database_to_file,
 };
 use rusqlite::Connection;
 use std::mem;
@@ -47,9 +48,13 @@ impl BackendState {
         frontend_tx: EventTx,
         app_tx: EventTx,
         env: Arc<Env>,
+        args: &Args,
     ) -> Result<Self, anyhow::Error> {
-        let (conn, previous_conversation) =
-            load_previous_conversation_from_database(env.database_file_path())?;
+        let (conn, previous_conversation) = if args.resume() {
+            load_previous_conversation_from_database(env.database_file_path())?
+        } else {
+            begin_new_conversation(env.database_file_path())?
+        };
 
         let is_users_turn = previous_conversation.is_empty()
             || previous_conversation.last().unwrap().sender == env.their_name();
@@ -252,10 +257,10 @@ impl BackendState {
         let mut conn = self.conn;
         commit_conversation_to_database(
             &mut conn,
-            &self.env.starting_prompt(),
+            self.env.starting_prompt(),
             &self.conversation,
         )?;
-        save_database_to_file(&mut conn, self.env.database_file_path())?;
+        save_database_to_file(&conn, self.env.database_file_path())?;
 
         Ok(())
     }
@@ -278,7 +283,7 @@ fn create_prompt_from_messages(
     let mut prompt = String::with_capacity(messages_len + starting_prompt.len());
 
     if !starting_prompt.is_empty() {
-        prompt.push_str(&starting_prompt);
+        prompt.push_str(starting_prompt);
         prompt.push_str("\n\n")
     }
 

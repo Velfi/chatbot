@@ -54,7 +54,7 @@ pub async fn fetch_response_to_prompt(
 
     let message = Message {
         id,
-        sender: their_name.into(),
+        sender: their_name,
         content,
         timestamp: chrono::Utc::now(),
     };

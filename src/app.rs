@@ -4,7 +4,7 @@ mod frontend;
 
 use std::sync::Arc;
 
-use crate::message::Message;
+use crate::{message::Message, Args};
 use backend::BackendState;
 use env::Env;
 use frontend::FrontendState;
@@ -14,15 +14,15 @@ use tracing::{debug, error, info, trace};
 pub struct App;
 
 impl App {
-    pub async fn run_until_exit() -> Result<(), anyhow::Error> {
-        let env = Arc::new(Env::new()?);
+    pub async fn run_until_exit(args: Args) -> Result<(), anyhow::Error> {
+        let env = Arc::new(Env::new(&args)?);
 
         let (app_tx, mut app_rx) = unbounded_channel::<Event>();
         let (f_tx, f_rx) = unbounded_channel::<Event>();
         let (b_tx, b_rx) = unbounded_channel::<Event>();
 
         let mut frontend = FrontendState::new(f_rx, b_tx, app_tx.clone(), env.clone()).await?;
-        let mut backend = BackendState::new(b_rx, f_tx, app_tx, env.clone()).await?;
+        let mut backend = BackendState::new(b_rx, f_tx, app_tx, env.clone(), &args).await?;
 
         trace!("frontend and backend state has been initialized, starting main loop");
 

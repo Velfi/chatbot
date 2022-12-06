@@ -1,6 +1,6 @@
 # Chatbot
 
-A personal chatbot built on top of OpenAI's GPT-3 API.
+A terminal-based client for talking to OpenAI's GPT models.
 
 ## Getting Started
 

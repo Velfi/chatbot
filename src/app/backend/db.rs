@@ -3,7 +3,7 @@ use std::path::Path;
 use crate::message::Message;
 use anyhow::Context;
 use rusqlite::{params, Connection};
-use tracing::{info, debug};
+use tracing::{debug, info};
 
 pub fn load_previous_conversation_from_database(
     path: &Path,
@@ -29,6 +29,18 @@ pub fn load_previous_conversation_from_database(
         .or_else(|e| {
             info!("failed to load database from disk: {}", e);
             info!("creating new database and returning empty conversation");
+            initialize_database()
+                .context("failed to initialize database")
+                .map(|conn| (conn, Vec::new()))
+        })
+}
+
+pub fn begin_new_conversation(path: &Path) -> Result<(Connection, Vec<Message>), anyhow::Error> {
+    Connection::open(path)
+        .context("failed to load database from disk")
+        .map(|conn| (conn, Vec::new()))
+        .or_else(|_| {
+            info!("no database file found, creating new database and starting a new conversation");
             initialize_database()
                 .context("failed to initialize database")
                 .map(|conn| (conn, Vec::new()))

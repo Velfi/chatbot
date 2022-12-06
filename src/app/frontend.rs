@@ -168,6 +168,7 @@ impl FrontendState {
             .draw(|f| {
                 let chunks = build_layout_chunks(f);
 
+                // TODO break this up into smaller functions
                 if self.widget_state.conversation.is_empty() {
                     let p = Paragraph::new(Span::styled(
                         "This is a new conversation. Type your message and press Enter to start chatting.",
@@ -183,28 +184,38 @@ impl FrontendState {
                 } else {
                     let entries: Vec<_> = self.widget_state.conversation
                         .iter()
-                        .map(|m| {
-                            Spans::from(vec![
-                                Span::styled(&m.sender, Style::default().add_modifier(Modifier::BOLD)),
-                                Span::raw(": "),
-                                Span::styled(
-                                    m.timestamp.to_rfc2822(),
-                                    Style::default()
-                                        .fg(Color::Gray)
-                                        .add_modifier(Modifier::ITALIC),
-                                    ),
-                                Span::raw(&m.content),
-                                // Empty line to space things out a bit
-                                Span::raw(""),
-                            ])
+                        .flat_map(|m| {
+                            [
+                                Spans::from(vec![
+                                    Span::styled(&m.sender, Style::default().add_modifier(Modifier::BOLD)),
+                                    Span::raw(": "),
+                                    Span::styled(
+                                        m.timestamp.to_rfc2822(),
+                                        Style::default()
+                                            .fg(Color::Gray)
+                                            .add_modifier(Modifier::ITALIC),
+                                        ),
+                                ]),
+                                Spans::from(Span::raw(&m.content)),
+                                // empty `Spans` to add a newline
+                                Spans::default(),
+                            ]
                         })
                         .collect();
 
+                    let conversation_length = entries.len() as u16;
+                    let bottom_of_conversation_block = chunks[0].bottom();
+
+                    let scroll_offset = if bottom_of_conversation_block < conversation_length {
+                        conversation_length - bottom_of_conversation_block + 1
+                    } else {
+                        0
+                    };
+
                     let conversation = Paragraph::new(entries)
                     // TODO allow users to  scroll the conversation
-                    // TODO autoscroll to last message on conversation update
                     // This will scroll down to the latest message in the conversation.
-                    // .scroll((0, 0))
+                    .scroll((scroll_offset, 0))
                     .wrap(Wrap { trim: false })
                     .block(Block::default().borders(Borders::BOTTOM));
 

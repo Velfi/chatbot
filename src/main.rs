@@ -1,8 +1,10 @@
 pub mod app;
+pub mod args;
 pub mod message;
 pub mod openai_api;
 
-use crate::app::App;
+use app::App;
+use args::Args;
 use tracing_subscriber::filter::EnvFilter;
 
 #[tokio::main]
@@ -16,5 +18,7 @@ async fn main() -> anyhow::Result<()> {
         .with_writer(non_blocking)
         .init();
 
-    App::run_until_exit().await
+    let args = Args::parse();
+
+    App::run_until_exit(args).await
 }

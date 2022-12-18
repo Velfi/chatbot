@@ -11,6 +11,10 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.66"
+aws-config = "0.52.0"
+aws-sdk-polly = "0.22.0"
+aws-sdk-s3 = "0.22.0"
+aws-sdk-transcribe = "0.22.0"
 chrono = { version = "0.4.23", features = ["serde"] }
 clap = { version = "4.0.29", features = ["derive"] }
 crossterm = "0.25.0"

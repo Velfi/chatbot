@@ -1,5 +1,6 @@
 pub mod app;
 pub mod args;
+pub mod aws_api;
 pub mod message;
 pub mod openai_api;
 

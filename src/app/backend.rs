@@ -1,6 +1,10 @@
+pub mod call;
 mod db;
+mod state;
+pub mod text;
 
 use super::env::Env;
+use super::strategy::Strategy;
 use super::{Event, EventRx, EventTx};
 use crate::message::Message;
 use crate::openai_api::fetch_response_to_prompt;
@@ -10,13 +14,11 @@ use db::{
     load_previous_conversation_from_database, save_database_to_file,
 };
 use rusqlite::Connection;
+pub use state::State;
 use std::mem;
-use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc;
 use tracing::{debug, instrument, trace};
-
-// The Unpin in this feels wrong but I'm not sure
 
 enum Inner {
     // The app is currently waiting for a response from OpenAI
@@ -32,238 +34,138 @@ enum Inner {
     UsersTurn,
 }
 
-pub struct BackendState {
-    _app_tx: EventTx,
-    conn: Connection,
-    conversation: Vec<Message>,
-    frontend_tx: EventTx,
-    inner: Inner,
-    rx: EventRx,
-    env: Arc<Env>,
-}
+#[instrument(name = "backend tick", skip(state, strategy))]
+pub async fn tick(state: &mut State, strategy: impl Strategy) -> Result<(), anyhow::Error> {
+    trace!("checking for received events...");
+    strategy.handle_backend_events(state).await?;
 
-impl BackendState {
-    pub(super) async fn new(
-        rx: EventRx,
-        frontend_tx: EventTx,
-        app_tx: EventTx,
-        env: Arc<Env>,
-        args: &Args,
-    ) -> Result<Self, anyhow::Error> {
-        let (conn, previous_conversation) = if args.resume() {
-            load_previous_conversation_from_database(env.database_file_path())?
-        } else {
-            begin_new_conversation(env.database_file_path())?
-        };
+    trace!("driving state machine...");
+    match &mut state.inner {
+        Inner::BotsTurn => {
+            trace!("handling bot's turn...");
+            let id = state.conversation.len() as u64;
+            let prompt = create_prompt_from_messages(
+                state.env.starting_prompt(),
+                &state.conversation,
+                state.env.prompt_context_length(),
+            );
+            let req = fetch_response_to_prompt(
+                id,
+                prompt,
+                state.env.their_name().to_owned(),
+                state.env.openai_model_name().to_owned(),
+                state.env.token_limit(),
+            );
+            let (tx, rx) = mpsc::channel(1);
 
-        let is_users_turn = previous_conversation.is_empty()
-            || previous_conversation.last().unwrap().sender == env.their_name();
+            tokio::spawn(async move {
+                // TODO don't unwrap here
+                let response = req.await.unwrap();
+                tx.send(response).await.unwrap();
+            });
 
-        let inner = if is_users_turn {
-            Inner::UsersTurn
-        } else {
-            Inner::BotsTurn
-        };
+            state.inner = Inner::LoadingBotResponse {
+                start_time: Instant::now(),
+                rx,
+            };
 
-        frontend_tx
-            .send(Event::ConversationUpdated(previous_conversation.clone()))
-            .map_err(|e| anyhow::anyhow!("Failed to send conversation to frontend: {e}"))?;
-        frontend_tx
-            .send(Event::StatusUpdated(format!(
-                "{} is ready to chat. Please type your input and press ENTER",
-                env.their_name()
-            )))
-            .map_err(|e| anyhow::anyhow!("Failed to send status to frontend: {e}"))?;
-
-        Ok(Self {
-            _app_tx: app_tx,
-            conn,
-            conversation: previous_conversation,
-            frontend_tx,
-            inner,
-            rx,
-            env,
-        })
-    }
-
-    #[instrument(name = "backend tick", skip(self))]
-    pub(super) async fn tick(&mut self) -> Result<(), anyhow::Error> {
-        trace!("checking for received events...");
-        loop {
-            match self.rx.try_recv() {
-                Ok(event) => match event {
-                    Event::Quit => {
-                        // App will call the quit method. We can't call it because it consumes self.
-                    }
-                    Event::UserMessage(content) => {
-                        let message = Message {
-                            sender: self.env.your_name().to_owned(),
-                            content,
-                            timestamp: chrono::Utc::now(),
-                            id: self.conversation.len() as u64,
-                        };
-                        trace!(
-                            message.timestamp = message.timestamp.to_rfc2822().as_str(),
-                            message.id = message.id,
-                            message.content = message.content,
-                            "user sent message"
-                        );
-
-                        self.conversation.push(message);
-                        // Immediately send the conversation to the frontend so that the user's
-                        // message will be displayed immediately, instead of after the bot responds.
-                        self.frontend_tx
-                            .send(Event::ConversationUpdated(self.conversation.clone()))
-                            .map_err(|e| {
-                                anyhow::anyhow!(
-                                    "failed to notify frontend of conversation update: {e}"
-                                )
-                            })?;
-
-                        self.inner = Inner::BotsTurn;
-                    }
-                    _ => {}
-                },
-                Err(e) => match e {
-                    mpsc::error::TryRecvError::Empty => break,
-                    mpsc::error::TryRecvError::Disconnected => {
-                        unreachable!(
-                            "The frontend will never disconnect from the backend while ticking"
-                        )
-                    }
-                },
-            }
+            Ok(())
         }
-
-        trace!("driving state machine...");
-        match &mut self.inner {
-            Inner::BotsTurn => {
-                trace!("handling bot's turn...");
-                let id = self.conversation.len() as u64;
-                let prompt = create_prompt_from_messages(
-                    self.env.starting_prompt(),
-                    &self.conversation,
-                    self.env.prompt_context_length(),
+        Inner::LoadingBotResponse { start_time, rx } => {
+            trace!("loading bot response...");
+            if start_time.elapsed() > state.env.expected_response_time() {
+                trace!(
+                    "{} is taking longer than {:?} to respond",
+                    state.env.their_name(),
+                    state.env.expected_response_time()
                 );
-                let req = fetch_response_to_prompt(
-                    id,
-                    prompt,
-                    self.env.their_name().to_owned(),
-                    self.env.openai_model_name().to_owned(),
-                    self.env.token_limit(),
-                );
-                let (tx, rx) = mpsc::channel(1);
+                let start_time = *start_time;
+                let rx = mem::replace(rx, mpsc::channel(1).1);
+                state.inner = Inner::TakingAWhileToLoadBotResponse { start_time, rx };
 
-                tokio::spawn(async move {
-                    // TODO don't unwrap here
-                    let response = req.await.unwrap();
-                    tx.send(response).await.unwrap();
-                });
-
-                self.inner = Inner::LoadingBotResponse {
-                    start_time: Instant::now(),
-                    rx,
-                };
-
-                Ok(())
+                return Ok(());
             }
-            Inner::LoadingBotResponse { start_time, rx } => {
-                trace!("loading bot response...");
-                if start_time.elapsed() > self.env.expected_response_time() {
-                    trace!(
-                        "{} is taking longer than {:?} to respond",
-                        self.env.their_name(),
-                        self.env.expected_response_time()
-                    );
-                    let start_time = *start_time;
-                    let rx = mem::replace(rx, mpsc::channel(1).1);
-                    self.inner = Inner::TakingAWhileToLoadBotResponse { start_time, rx };
 
-                    return Ok(());
-                }
+            state
+                .frontend_tx
+                .send(Event::StatusUpdated(
+                    "Waiting for bot's response".to_owned(),
+                ))
+                .map_err(|e| {
+                    anyhow::anyhow!("failed to notify frontend of status update: {}", e)
+                })?;
 
-                self.frontend_tx
-                    .send(Event::StatusUpdated(
-                        "Waiting for bot's response".to_owned(),
-                    ))
+            // TODO this code is copied in the below handler, how can this be avoided?
+            if let Some(message) = check_for_bot_response(state.env.their_name(), rx) {
+                state.conversation.push(message);
+                state
+                    .frontend_tx
+                    .send(Event::ConversationUpdated(state.conversation.clone()))
                     .map_err(|e| {
-                        anyhow::anyhow!("failed to notify frontend of status update: {}", e)
+                        anyhow::anyhow!("failed to notify frontend of conversation update: {e}")
                     })?;
-
-                // TODO this code is copied in the below handler, how can this be avoided?
-                if let Some(message) = check_for_bot_response(self.env.their_name(), rx) {
-                    self.conversation.push(message);
-                    self.frontend_tx
-                        .send(Event::ConversationUpdated(self.conversation.clone()))
-                        .map_err(|e| {
-                            anyhow::anyhow!("failed to notify frontend of conversation update: {e}")
-                        })?;
-                    self.frontend_tx
-                        .send(Event::StatusUpdated(format!(
-                            "Bot responded in {:?}",
-                            start_time.elapsed()
-                        )))
-                        .map_err(|e| {
-                            anyhow::anyhow!("failed to notify frontend of conversation update: {e}")
-                        })?;
-                    self.inner = Inner::UsersTurn;
-                }
-
-                Ok(())
-            }
-            Inner::TakingAWhileToLoadBotResponse { start_time, rx } => {
-                trace!("loading bot response (taking a while)...");
-                self.frontend_tx
+                state
+                    .frontend_tx
                     .send(Event::StatusUpdated(format!(
-                        "Waiting for bot's response, It's taking a while ({}s)",
-                        start_time.elapsed().as_secs()
+                        "Bot responded in {:?}",
+                        start_time.elapsed()
                     )))
                     .map_err(|e| {
-                        anyhow::anyhow!("failed to notify frontend of status update: {}", e)
+                        anyhow::anyhow!("failed to notify frontend of conversation update: {e}")
                     })?;
-
-                if let Some(message) = check_for_bot_response(self.env.their_name(), rx) {
-                    debug!("received response from {}", self.env.their_name());
-                    self.conversation.push(message);
-                    self.frontend_tx
-                        .send(Event::ConversationUpdated(self.conversation.clone()))
-                        .map_err(|e| {
-                            anyhow::anyhow!(
-                                "failed to notify frontend of conversation update: {}",
-                                e
-                            )
-                        })?;
-                    self.frontend_tx
-                        .send(Event::StatusUpdated(format!(
-                            "Bot slowly responded in {:?}",
-                            start_time.elapsed()
-                        )))
-                        .map_err(|e| {
-                            anyhow::anyhow!("failed to notify frontend of conversation update: {e}")
-                        })?;
-                    self.inner = Inner::UsersTurn;
-                }
-
-                Ok(())
+                state.inner = Inner::UsersTurn;
             }
-            Inner::UsersTurn => {
-                // The backend has nothing to do but wait for a response from the user
-                Ok(())
+
+            Ok(())
+        }
+        Inner::TakingAWhileToLoadBotResponse { start_time, rx } => {
+            trace!("loading bot response (taking a while)...");
+            state
+                .frontend_tx
+                .send(Event::StatusUpdated(format!(
+                    "Waiting for bot's response, It's taking a while ({}s)",
+                    start_time.elapsed().as_secs()
+                )))
+                .map_err(|e| {
+                    anyhow::anyhow!("failed to notify frontend of status update: {}", e)
+                })?;
+
+            if let Some(message) = check_for_bot_response(state.env.their_name(), rx) {
+                debug!("received response from {}", state.env.their_name());
+                state.conversation.push(message);
+                state
+                    .frontend_tx
+                    .send(Event::ConversationUpdated(state.conversation.clone()))
+                    .map_err(|e| {
+                        anyhow::anyhow!("failed to notify frontend of conversation update: {}", e)
+                    })?;
+                state
+                    .frontend_tx
+                    .send(Event::StatusUpdated(format!(
+                        "Bot slowly responded in {:?}",
+                        start_time.elapsed()
+                    )))
+                    .map_err(|e| {
+                        anyhow::anyhow!("failed to notify frontend of conversation update: {e}")
+                    })?;
+                state.inner = Inner::UsersTurn;
             }
+
+            Ok(())
+        }
+        Inner::UsersTurn => {
+            // The backend has nothing to do but wait for a response from the user
+            Ok(())
         }
     }
+}
 
-    pub async fn quit(self) -> Result<(), anyhow::Error> {
-        let mut conn = self.conn;
-        commit_conversation_to_database(
-            &mut conn,
-            self.env.starting_prompt(),
-            &self.conversation,
-        )?;
-        save_database_to_file(&conn, self.env.database_file_path())?;
+pub fn quit(state: State) -> Result<(), anyhow::Error> {
+    let mut conn = state.conn;
+    commit_conversation_to_database(&mut conn, state.env.starting_prompt(), &state.conversation)?;
+    save_database_to_file(&conn, state.env.database_file_path())?;
 
-        Ok(())
-    }
+    Ok(())
 }
 
 fn create_prompt_from_messages(

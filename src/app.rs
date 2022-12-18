@@ -1,13 +1,11 @@
 mod backend;
 mod env;
 mod frontend;
-
-use std::sync::Arc;
+pub mod strategy;
 
 use crate::{message::Message, Args};
-use backend::BackendState;
 use env::Env;
-use frontend::FrontendState;
+use std::sync::Arc;
 use tokio::sync::mpsc::{self, unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tracing::{debug, error, info, trace};
 
@@ -21,16 +19,18 @@ impl App {
         let (f_tx, f_rx) = unbounded_channel::<Event>();
         let (b_tx, b_rx) = unbounded_channel::<Event>();
 
-        let mut frontend = FrontendState::new(f_rx, b_tx, app_tx.clone(), env.clone()).await?;
-        let mut backend = BackendState::new(b_rx, f_tx, app_tx, env.clone(), &args).await?;
+        let mut frontend =
+            frontend::State::new(f_rx, b_tx, app_tx.clone(), env.clone(), &args).await?;
+        let mut backend =
+            backend::State::new(b_rx, f_tx, app_tx.clone(), env.clone(), &args).await?;
 
         trace!("frontend and backend state has been initialized, starting main loop");
 
         'main_loop: loop {
             trace!("requesting frontend update");
-            let frontend_fut = frontend.tick();
+            let frontend_fut = frontend::tick(&mut frontend, args.action());
             trace!("requesting backend update");
-            let backend_fut = backend.tick();
+            let backend_fut = backend::tick(&mut backend, args.action());
 
             let (frontend_result, backend_result) = tokio::join!(frontend_fut, backend_fut);
             frontend_result?;
@@ -43,9 +43,9 @@ impl App {
                 match app_rx.try_recv() {
                     Ok(event) => {
                         if let Event::Quit = event {
-                            frontend.quit().await?;
+                            frontend::quit(frontend)?;
                             debug!("frontend is done quitting");
-                            backend.quit().await?;
+                            backend::quit(backend)?;
                             debug!("backend is done quitting");
                             info!("Thanks for chatting!");
 

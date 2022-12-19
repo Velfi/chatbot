@@ -1,18 +1,28 @@
-use super::db::{
-    begin_new_conversation, commit_conversation_to_database,
-    load_previous_conversation_from_database, save_database_to_file,
-};
+use super::db::{begin_new_conversation, load_previous_conversation_from_database};
 use super::{Event, EventRx, EventTx};
-use crate::app::env::Env;
-use crate::message::Message;
+use crate::app::{env::Env, TurnToSpeak};
+use crate::message::{create_prompt_from_messages, Message};
 use crate::openai_api::fetch_response_to_prompt;
 use crate::Args;
 use rusqlite::Connection;
 use std::mem;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 use tracing::{debug, instrument, trace};
+
+pub enum Inner {
+    SendRequest,
+    // The app is currently waiting for a response from OpenAI
+    LoadingBotResponse {
+        start_time: Instant,
+        rx: oneshot::Receiver<Message>,
+    },
+    TakingAWhileToLoadBotResponse {
+        start_time: Instant,
+        rx: oneshot::Receiver<Message>,
+    },
+}
 
 pub struct State {
     pub _app_tx: EventTx,
@@ -22,6 +32,7 @@ pub struct State {
     pub inner: Inner,
     pub rx: EventRx,
     pub env: Arc<Env>,
+    pub turn_to_speak: TurnToSpeak,
 }
 
 impl State {
@@ -38,15 +49,15 @@ impl State {
             begin_new_conversation(env.database_file_path())?
         };
 
-        let is_users_turn = previous_conversation.is_empty()
-            || previous_conversation.last().unwrap().sender == env.their_name();
-
-        let inner = if is_users_turn {
-            Inner::UsersTurn
+        let turn_to_speak = if previous_conversation.is_empty()
+            || previous_conversation.last().unwrap().sender == env.their_name()
+        {
+            TurnToSpeak::User
         } else {
-            Inner::BotsTurn
+            TurnToSpeak::Bot
         };
 
+        // Can we combine these two and send a slice or something instead?
         frontend_tx
             .send(Event::ConversationUpdated(previous_conversation.clone()))
             .map_err(|e| anyhow::anyhow!("Failed to send conversation to frontend: {e}"))?;
@@ -62,43 +73,133 @@ impl State {
             conn,
             conversation: previous_conversation,
             frontend_tx,
-            inner,
+            inner: Inner::SendRequest,
             rx,
             env,
+            turn_to_speak,
         })
     }
-}
 
-fn create_prompt_from_messages(
-    starting_prompt: &str,
-    messages: &[Message],
-    prompt_context_length: usize,
-) -> String {
-    let mut message_iter = messages.iter();
-    while message_iter.len() > prompt_context_length {
-        // Skip messages until we've limited ourselves to the last <PROMPT_MESSAGES_TO_SEND> messages
-        let _ = message_iter.next();
+    pub fn run_bot_response_state_machine(&mut self) -> Result<(), anyhow::Error> {
+        match &mut self.inner {
+            Inner::SendRequest => {
+                trace!("handling bot's turn...");
+                let id = self.conversation.len() as u64;
+                let prompt = create_prompt_from_messages(
+                    self.env.starting_prompt(),
+                    &self.conversation,
+                    self.env.prompt_context_length(),
+                );
+
+                let req = fetch_response_to_prompt(
+                    id,
+                    prompt,
+                    self.env.their_name().to_owned(),
+                    self.env.openai_model_name().to_owned(),
+                    self.env.token_limit(),
+                );
+                let (tx, rx) = oneshot::channel();
+
+                tokio::spawn(async move {
+                    // TODO don't unwrap here
+                    let response = req.await.unwrap();
+                    tx.send(response).unwrap();
+                });
+
+                self.inner = Inner::LoadingBotResponse {
+                    start_time: Instant::now(),
+                    rx,
+                };
+            }
+            Inner::LoadingBotResponse { start_time, rx } => {
+                trace!("loading bot response...");
+                if start_time.elapsed() > self.env.expected_response_time() {
+                    trace!(
+                        "{} is taking longer than {:?} to respond",
+                        self.env.their_name(),
+                        self.env.expected_response_time()
+                    );
+                    let start_time = *start_time;
+                    // TODO is this really necessary?
+                    let rx = mem::replace(rx, oneshot::channel().1);
+                    self.inner = Inner::TakingAWhileToLoadBotResponse { start_time, rx };
+
+                    return Ok(());
+                }
+
+                self.frontend_tx
+                    .send(Event::StatusUpdated(
+                        "Waiting for bot's response".to_owned(),
+                    ))
+                    .map_err(|e| {
+                        anyhow::anyhow!("failed to notify frontend of status update: {}", e)
+                    })?;
+
+                // TODO this code is copied in the below handler, how can this be avoided?
+                if let Some(message) = check_for_bot_response(self.env.their_name(), rx) {
+                    self.conversation.push(message);
+                    self.frontend_tx
+                        .send(Event::ConversationUpdated(self.conversation.clone()))
+                        .map_err(|e| {
+                            anyhow::anyhow!("failed to notify frontend of conversation update: {e}")
+                        })?;
+                    self.frontend_tx
+                        .send(Event::StatusUpdated(format!(
+                            "Bot responded in {:?}",
+                            start_time.elapsed()
+                        )))
+                        .map_err(|e| {
+                            anyhow::anyhow!("failed to notify frontend of conversation update: {e}")
+                        })?;
+                    self.turn_to_speak = TurnToSpeak::User;
+                    self.inner = Inner::SendRequest;
+                }
+            }
+            Inner::TakingAWhileToLoadBotResponse { start_time, rx } => {
+                trace!("loading bot response (taking a while)...");
+                self.frontend_tx
+                    .send(Event::StatusUpdated(format!(
+                        "Waiting for bot's response, It's taking a while ({}s)",
+                        start_time.elapsed().as_secs()
+                    )))
+                    .map_err(|e| {
+                        anyhow::anyhow!("failed to notify frontend of status update: {}", e)
+                    })?;
+
+                if let Some(message) = check_for_bot_response(self.env.their_name(), rx) {
+                    debug!("received response from {}", self.env.their_name());
+                    self.conversation.push(message);
+                    self.frontend_tx
+                        .send(Event::ConversationUpdated(self.conversation.clone()))
+                        .map_err(|e| {
+                            anyhow::anyhow!(
+                                "failed to notify frontend of conversation update: {}",
+                                e
+                            )
+                        })?;
+                    self.frontend_tx
+                        .send(Event::StatusUpdated(format!(
+                            "Bot slowly responded in {:?}",
+                            start_time.elapsed()
+                        )))
+                        .map_err(|e| {
+                            anyhow::anyhow!("failed to notify frontend of conversation update: {e}")
+                        })?;
+                    self.turn_to_speak = TurnToSpeak::User;
+                    self.inner = Inner::SendRequest;
+                }
+            }
+        }
+
+        Ok(())
     }
-
-    let messages_len = message_iter.clone().map(|m| m.content.len()).sum::<usize>();
-    // Really, the final prompt will be longer than this due to also including names and timestamps,
-    // but this is a good starting point.
-    let mut prompt = String::with_capacity(messages_len + starting_prompt.len());
-
-    if !starting_prompt.is_empty() {
-        prompt.push_str(starting_prompt);
-        prompt.push_str("\n\n")
-    }
-
-    for message in message_iter {
-        prompt.push_str(format!("{}:\n{}\n\n", &message.sender, &message.content).as_str());
-    }
-
-    prompt
 }
 
 #[instrument(skip(rx))]
-fn check_for_bot_response(their_name: &str, rx: &mut mpsc::Receiver<Message>) -> Option<Message> {
+fn check_for_bot_response(
+    their_name: &str,
+    rx: &mut oneshot::Receiver<Message>,
+) -> Option<Message> {
     match rx.try_recv() {
         Ok(message) => {
             debug!("received response from {their_name}",);
@@ -112,11 +213,11 @@ fn check_for_bot_response(their_name: &str, rx: &mut mpsc::Receiver<Message>) ->
             Some(message)
         }
         Err(e) => match e {
-            mpsc::error::TryRecvError::Empty => {
+            oneshot::error::TryRecvError::Empty => {
                 trace!("no response from {their_name} yet");
                 None
             }
-            mpsc::error::TryRecvError::Disconnected => {
+            oneshot::error::TryRecvError::Closed => {
                 unreachable!("The request task can't close this mpsc before sending the response")
             }
         },

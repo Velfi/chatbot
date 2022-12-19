@@ -1,6 +1,8 @@
 use super::State;
-use crate::{app::Event, message::Message};
-use std::time::Instant;
+use crate::{
+    app::{Event, TurnToSpeak},
+    message::Message,
+};
 use tokio::sync::mpsc;
 use tracing::trace;
 
@@ -37,7 +39,7 @@ pub fn handle_backend_events(state: &mut State) -> Result<(), anyhow::Error> {
                             anyhow::anyhow!("failed to notify frontend of conversation update: {e}")
                         })?;
 
-                    state.inner = Inner::BotsTurn;
+                    state.turn_to_speak = TurnToSpeak::Bot;
                 }
                 _ => {}
             },

@@ -15,7 +15,7 @@ use tui::{backend::CrosstermBackend, Terminal};
 use tui_textarea::TextArea;
 
 // TODO Can these use Cows instead?
-struct WidgetState {
+pub struct WidgetState {
     pub conversation: Vec<Message>,
     pub status: String,
     pub textarea: TextArea<'static>,

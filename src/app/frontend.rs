@@ -3,6 +3,8 @@ mod state;
 pub mod text;
 
 use super::strategy::Strategy;
+use super::TurnToSpeak;
+use crate::{app::Event, message::Message};
 use anyhow::Context;
 use crossterm::{
     event::DisableMouseCapture,
@@ -12,13 +14,6 @@ use crossterm::{
 pub use state::State;
 use tokio::sync::mpsc;
 use tracing::{instrument, trace};
-
-use crate::{app::Event, message::Message};
-
-enum TurnToSpeak {
-    User,
-    Bot,
-}
 
 #[instrument(name = "frontend tick", skip(state, strategy))]
 pub(super) async fn tick(state: &mut State, strategy: impl Strategy) -> Result<(), anyhow::Error> {
@@ -70,7 +65,7 @@ pub(super) async fn tick(state: &mut State, strategy: impl Strategy) -> Result<(
     Ok(())
 }
 
-pub fn quit(state: State) -> Result<(), anyhow::Error> {
+pub fn quit(mut state: State) -> Result<(), anyhow::Error> {
     trace!("tearing down terminal");
 
     disable_raw_mode().context("disabling raw mode")?;

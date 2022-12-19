@@ -9,6 +9,11 @@ use std::sync::Arc;
 use tokio::sync::mpsc::{self, unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tracing::{debug, error, info, trace};
 
+pub enum TurnToSpeak {
+    User,
+    Bot,
+}
+
 pub struct App;
 
 impl App {
@@ -72,7 +77,8 @@ impl App {
 type EventRx = UnboundedReceiver<Event>;
 type EventTx = UnboundedSender<Event>;
 
-enum Event {
+#[derive(Debug)]
+pub enum Event {
     /// Any handler receiving this event should put its affairs in order.
     Quit,
     UserMessage(String),

@@ -1,5 +1,6 @@
 pub mod app;
 pub mod args;
+pub mod aws_api;
 pub mod message;
 pub mod openai_api;
 
@@ -9,7 +10,8 @@ use tracing_subscriber::filter::EnvFilter;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    dotenv::dotenv().expect("failed to read .env file, please create one");
+    // A .env is supported, but not required
+    let _ = dotenv::dotenv();
     let log_file = std::fs::File::create("debug.log")?;
     let (non_blocking, _guard) = tracing_appender::non_blocking(log_file);
     tracing_subscriber::fmt()

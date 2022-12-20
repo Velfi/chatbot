@@ -1,11 +1,16 @@
-use std::path::{PathBuf, Path};
+mod subcommand;
 
 use clap::{command, Parser};
+use std::path::{Path, PathBuf};
+pub use subcommand::Action;
 
 /// A clap args struct containing the command line arguments for this program
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 pub struct Args {
+    #[clap(subcommand)]
+    action: Action,
+
     /// When passed, resume the previous conversation instead of starting a new one.
     #[clap(long, default_value_t = false)]
     resume: bool,
@@ -56,6 +61,10 @@ pub struct Args {
 impl Args {
     pub fn parse() -> Self {
         Parser::parse()
+    }
+
+    pub fn action(&self) -> Action {
+        self.action
     }
 
     pub fn resume(&self) -> bool {

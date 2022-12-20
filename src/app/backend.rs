@@ -17,7 +17,7 @@ pub async fn tick(state: &mut State, strategy: impl Strategy) -> Result<(), anyh
 
     trace!("driving state machine...");
     match state.turn_to_speak {
-        TurnToSpeak::Bot => state.run_bot_response_state_machine(),
+        TurnToSpeak::Bot => strategy.run_bot_state_machine(state),
         TurnToSpeak::User => {
             // The backend has nothing to do but wait for a response from the user
             Ok(())

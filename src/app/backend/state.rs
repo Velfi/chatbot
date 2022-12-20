@@ -1,14 +1,12 @@
 use super::db::{begin_new_conversation, load_previous_conversation_from_database};
 use super::{Event, EventRx, EventTx};
 use crate::app::{env::Env, TurnToSpeak};
-use crate::message::{create_prompt_from_messages, Message};
-use crate::openai_api::fetch_response_to_prompt;
+use crate::message::Message;
 use crate::Args;
 use rusqlite::Connection;
-use std::mem;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, instrument, trace};
 
 pub enum Inner {
@@ -80,114 +78,52 @@ impl State {
         })
     }
 
-    pub fn run_bot_response_state_machine(&mut self) -> Result<(), anyhow::Error> {
-        match &mut self.inner {
-            Inner::SendRequest => {
-                trace!("handling bot's turn...");
-                let id = self.conversation.len() as u64;
-                let prompt = create_prompt_from_messages(
-                    self.env.starting_prompt(),
-                    &self.conversation,
-                    self.env.prompt_context_length(),
-                );
+    pub fn handle_backend_events(&mut self) -> Result<(), anyhow::Error> {
+        trace!("handling backend events...");
 
-                let req = fetch_response_to_prompt(
-                    id,
-                    prompt,
-                    self.env.their_name().to_owned(),
-                    self.env.openai_model_name().to_owned(),
-                    self.env.token_limit(),
-                );
-                let (tx, rx) = oneshot::channel();
+        loop {
+            match self.rx.try_recv() {
+                Ok(event) => match event {
+                    Event::Quit => {
+                        // App will call the quit method. We can't call it because it consumes self.
+                    }
+                    Event::UserMessage(content) => {
+                        let message = Message {
+                            sender: self.env.your_name().to_owned(),
+                            content,
+                            timestamp: chrono::Utc::now(),
+                            id: self.conversation.len() as u64,
+                        };
+                        trace!(
+                            message.timestamp = message.timestamp.to_rfc2822().as_str(),
+                            message.id = message.id,
+                            message.content = message.content,
+                            "user sent message"
+                        );
 
-                tokio::spawn(async move {
-                    // TODO don't unwrap here
-                    let response = req.await.unwrap();
-                    tx.send(response).unwrap();
-                });
+                        self.conversation.push(message);
+                        // Immediately send the conversation to the frontend so that the user's
+                        // message will be displayed immediately, instead of after the bot responds.
+                        self.frontend_tx
+                            .send(Event::ConversationUpdated(self.conversation.clone()))
+                            .map_err(|e| {
+                                anyhow::anyhow!(
+                                    "failed to notify frontend of conversation update: {e}"
+                                )
+                            })?;
 
-                self.inner = Inner::LoadingBotResponse {
-                    start_time: Instant::now(),
-                    rx,
-                };
-            }
-            Inner::LoadingBotResponse { start_time, rx } => {
-                trace!("loading bot response...");
-                if start_time.elapsed() > self.env.expected_response_time() {
-                    trace!(
-                        "{} is taking longer than {:?} to respond",
-                        self.env.their_name(),
-                        self.env.expected_response_time()
-                    );
-                    let start_time = *start_time;
-                    // TODO is this really necessary?
-                    let rx = mem::replace(rx, oneshot::channel().1);
-                    self.inner = Inner::TakingAWhileToLoadBotResponse { start_time, rx };
-
-                    return Ok(());
-                }
-
-                self.frontend_tx
-                    .send(Event::StatusUpdated(
-                        "Waiting for bot's response".to_owned(),
-                    ))
-                    .map_err(|e| {
-                        anyhow::anyhow!("failed to notify frontend of status update: {}", e)
-                    })?;
-
-                // TODO this code is copied in the below handler, how can this be avoided?
-                if let Some(message) = check_for_bot_response(self.env.their_name(), rx) {
-                    self.conversation.push(message);
-                    self.frontend_tx
-                        .send(Event::ConversationUpdated(self.conversation.clone()))
-                        .map_err(|e| {
-                            anyhow::anyhow!("failed to notify frontend of conversation update: {e}")
-                        })?;
-                    self.frontend_tx
-                        .send(Event::StatusUpdated(format!(
-                            "Bot responded in {:?}",
-                            start_time.elapsed()
-                        )))
-                        .map_err(|e| {
-                            anyhow::anyhow!("failed to notify frontend of conversation update: {e}")
-                        })?;
-                    self.turn_to_speak = TurnToSpeak::User;
-                    self.inner = Inner::SendRequest;
-                }
-            }
-            Inner::TakingAWhileToLoadBotResponse { start_time, rx } => {
-                trace!("loading bot response (taking a while)...");
-                self.frontend_tx
-                    .send(Event::StatusUpdated(format!(
-                        "Waiting for bot's response, It's taking a while ({}s)",
-                        start_time.elapsed().as_secs()
-                    )))
-                    .map_err(|e| {
-                        anyhow::anyhow!("failed to notify frontend of status update: {}", e)
-                    })?;
-
-                if let Some(message) = check_for_bot_response(self.env.their_name(), rx) {
-                    debug!("received response from {}", self.env.their_name());
-                    self.conversation.push(message);
-                    self.frontend_tx
-                        .send(Event::ConversationUpdated(self.conversation.clone()))
-                        .map_err(|e| {
-                            anyhow::anyhow!(
-                                "failed to notify frontend of conversation update: {}",
-                                e
-                            )
-                        })?;
-                    self.frontend_tx
-                        .send(Event::StatusUpdated(format!(
-                            "Bot slowly responded in {:?}",
-                            start_time.elapsed()
-                        )))
-                        .map_err(|e| {
-                            anyhow::anyhow!("failed to notify frontend of conversation update: {e}")
-                        })?;
-                    self.turn_to_speak = TurnToSpeak::User;
-                    self.inner = Inner::SendRequest;
-                }
+                        self.turn_to_speak = TurnToSpeak::Bot;
+                    }
+                    _ => {}
+                },
+                Err(e) => match e {
+                    mpsc::error::TryRecvError::Empty => break,
+                    mpsc::error::TryRecvError::Disconnected => {
+                        unreachable!(
+                            "The frontend will never disconnect from the backend while ticking"
+                        )
+                    }
+                },
             }
         }
 
@@ -196,7 +132,7 @@ impl State {
 }
 
 #[instrument(skip(rx))]
-fn check_for_bot_response(
+pub fn check_for_bot_response(
     their_name: &str,
     rx: &mut oneshot::Receiver<Message>,
 ) -> Option<Message> {

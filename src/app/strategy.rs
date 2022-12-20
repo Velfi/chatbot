@@ -5,6 +5,7 @@ pub trait Strategy {
     fn handle_user_input(&self, state: &mut frontend::State) -> Result<(), anyhow::Error>;
     fn redraw_terminal(&self, state: &mut frontend::State) -> Result<(), anyhow::Error>;
     fn handle_backend_events(&self, state: &mut backend::State) -> Result<(), anyhow::Error>;
+    fn run_bot_state_machine(&self, state: &mut backend::State) -> Result<(), anyhow::Error>;
 }
 
 impl Strategy for Action {
@@ -26,6 +27,13 @@ impl Strategy for Action {
         match self {
             Action::Call => backend::call::handle_backend_events(state),
             Action::Text => backend::text::handle_backend_events(state),
+        }
+    }
+
+    fn run_bot_state_machine(&self, state: &mut backend::State) -> Result<(), anyhow::Error> {
+        match self {
+            Action::Call => backend::call::run_bot_state_machine(state),
+            Action::Text => backend::text::run_bot_state_machine(state),
         }
     }
 }

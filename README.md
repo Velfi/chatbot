@@ -12,8 +12,8 @@ OPENAI_API_KEY=<your api key>
 OPENAI_ORGANIZATION_ID=<your org id>
 ```
 
-* *You can find your organization ID [here](organization-id).*
-* *You can find your API key(s) [here](API-key).*
+* *You can find your organization ID [here][organization-id].*
+* *You can find your API key(s) [here][API-key].*
 
 Once those are set, run the app and start chatting:
 
